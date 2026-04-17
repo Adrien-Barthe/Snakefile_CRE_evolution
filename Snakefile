@@ -13,7 +13,7 @@ SELECTIONS_M3 = ["-0.0001"]
 PD_L = ["0.5"] # Physical distance between elements (in kb)
 CRE_L = ["1"] # Cis-Regulatory Element length (in kb)
 
-REPLICATS = range(1, 1001) # Replicate IDs (1 to 1000)
+REPLICATS = range(1, 1001) # Replicate IDs (1 to 1000= 1,1001)
 GENERATION = 10000         # Generation at which SLiM outputs data
 
 # --- Dynamic Plotting Parameters ---
