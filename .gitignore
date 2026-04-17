@@ -1,0 +1,7 @@
+SLIM/
+05-results/
+logs/
+02-scripts/
+*tar.gz
+.snakemake/
+Models/
