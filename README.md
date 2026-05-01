@@ -28,6 +28,13 @@ cd Snakefile_CRE_evolution
 conda env create -f environment.yml
 conda activate pipeline_reg
 ```
+To ensure the pipeline runs smoothly on any machine or cluster, we redirect the temporary files to a local `tmp/` folder directly inside the current project directory:
+
+```bash
+# Creates a local tmp folder and tells SLiM to use it
+export TMPDIR=$PWD/tmp
+mkdir -p $TMPDIR
+```
 
 ## Pipeline Architecture
 The Snakemake workflow handles the following steps automatically:
@@ -42,10 +49,7 @@ The Snakemake workflow handles the following steps automatically:
 Always clear out the old R scripts before running. Because Snakemake dynamically generates the R scripts, deleting them forces the pipeline to write the most up-to-date versions based on your current Snakefile.
 
 ```bash
-# 1. Clean up old R scripts
-rm -f 02-scripts/*.R
-
-# 2. Launch the pipeline on the cluster ( adjust jobs parameters accordingly to cluster capacity, 5 jobs means that at maximum you take 100 cores and 160 GB ram)
+Launch the pipeline on the cluster ( adjust jobs parameters accordingly to cluster capacity, 5 jobs means that at maximum you take 100 cores and 160 GB ram)
 nohup snakemake --executor slurm --jobs 5 &
 ```
 
