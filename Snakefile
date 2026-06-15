@@ -3,16 +3,37 @@ import glob
 import re
 import itertools
 
+# ==============================================================================
+# MODE SELECTION
+#
+# Full mode (default): snakemake [...]
+#                      runs SLiM simulations for the parameters defined below (if needed),
+#                      computes summary stats, and produces plots from new + old data
+#
+# Plot-only mode: snakemake --config plot_only=True [...]
+#                 Never launches simulations or stat computations, only produces PDFs
+#                 from data that already exists in 05-results/
+# ==============================================================================
+PLOT_ONLY = config.get("plot_only", False)
+
+# In plot-only mode: treat existing files as always up-to-date
+# In full mode: leave inputs untouched
+def _anc(x):
+    return ancient(x) if PLOT_ONLY else x
+
 # Rules executing on the head node
-localrules: all, create_models, merge_mutations_counts, merge_m3_ave_time_fix, create_R_scripts
+if PLOT_ONLY:
+    localrules: all, create_R_scripts
+else:
+    localrules: all, create_models, merge_mutations_counts, merge_m3_ave_time_fix, create_R_scripts
 
 # ==============================================================================
 # CURRENT SIMULATION PARAMETERS
 # Defines the exact models that SLiM needs to run during this execution.
 # ==============================================================================
-DOMINANCES = ["0.1", "0.7"] # Dominance coeff
+DOMINANCES = ["0.1", "0.25"] # Dominance coeff
 SELECTIONS = ["-0.001", "-0.01", "-0.0425", "-0.1", "-0.3"] # Selection coeff for coding mutations (sM2)
-SELECTIONS_M3 = ["-0.0001"] # Selection coeff for regulatory mutations (sM3)
+SELECTIONS_M3 = ["-0.001"] # Selection coeff for regulatory mutations (sM3)
 PD_L = ["0.5"] # Physical distance (kb)
 CRE_L = ["1"] # CRE size (kb)
 
@@ -51,7 +72,32 @@ if os.path.exists("05-results"):
             EXISTING_COMBOS.add(m.groups()) # Adds a tuple (h, rec, cre, sm3, s)
 
 # Merges what exists with what will be done to unlock the plotting rules
-ALL_AVAILABLE = CURRENT_COMBOS.union(EXISTING_COMBOS)
+if PLOT_ONLY:
+    ALL_AVAILABLE = EXISTING_COMBOS
+else:
+    ALL_AVAILABLE = CURRENT_COMBOS.union(EXISTING_COMBOS)
+
+# Combos for which the full pipeline will be run: anything in CURRENT_COMBOS that does NOT already exist in 05-results/
+# If you want to rerun a model, delete its folder in 05-results 
+TODO_COMBOS = CURRENT_COMBOS - EXISTING_COMBOS
+
+# Print what was found on disk / what will actually be (re)computed
+if PLOT_ONLY:
+    print(f"[plot-only] Found {len(EXISTING_COMBOS)} existing model combinations in 05-results/")
+else:
+    print(f"[full] {len(EXISTING_COMBOS)} combinations already present in 05-results/, "
+          f"{len(TODO_COMBOS)} new combination(s) will be simulated today.")
+if EXISTING_COMBOS or (not PLOT_ONLY and TODO_COMBOS):
+    _ref = EXISTING_COMBOS if PLOT_ONLY else ALL_AVAILABLE
+    _h   = sorted(set(c[0] for c in _ref))
+    _rec = sorted(set(c[1] for c in _ref))
+    _sm3 = sorted(set(c[3] for c in _ref))
+    _s   = sorted(set(c[4] for c in _ref))
+    _tag = "plot-only" if PLOT_ONLY else "full"
+    print(f"[{_tag}]   h values  : {_h}")
+    print(f"[{_tag}]   rec values: {_rec}")
+    print(f"[{_tag}]   sM3 values: {_sm3}")
+    print(f"[{_tag}]   s values  : {_s}")
 
 # Priority order: always compute epistasis before the null model
 ruleorder: run_slim_epist_all > run_slim_null_all
@@ -59,47 +105,70 @@ ruleorder: run_slim_epist_all > run_slim_null_all
 # ==============================================================================
 # Determines exactly which files Snakemake must produce at the end.
 # ==============================================================================
-# A. Base targets: Simulation files and raw statistics
-ALL_TARGETS = [
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist_g{g}_{mut}_{type}Mut.out", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, g=GENERATION, cl=CRE_L, pl=PD_L, mut=["m1", "m2", "m3"], type=["s", "f"]),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_g{g}_{mut}_{type}Mut.out", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, g=GENERATION, cl=CRE_L, pl=PD_L, mut=["m1", "m2", "m3"], type=["s", "f"]),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist_g{g}_m3_aveTimeFix.out", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, g=GENERATION, cl=CRE_L, pl=PD_L),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_g{g}_m3_aveTimeFix.out", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, g=GENERATION, cl=CRE_L, pl=PD_L),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/pi_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist.txt", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, cl=CRE_L, pl=PD_L),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/sumStats_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist_haps.txt", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, cl=CRE_L, pl=PD_L),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/pi_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}.txt", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, cl=CRE_L, pl=PD_L),
-    expand("05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/sumStats_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_haps.txt", h=DOMINANCES, s=SELECTIONS, sm3=SELECTIONS_M3, cl=CRE_L, pl=PD_L)
-]
+# A. Base targets: Simulation files and raw statistics.
+# PLOT-ONLY MODE: skipped entirely, no simulation outputs are requested.
+# FULL MODE: only TODO_COMBOS (new combos not already in 05-results/) are requested.
+ALL_TARGETS = []
+if not PLOT_ONLY:
+    for (h, pl, cl, sm3, s) in TODO_COMBOS:
+        for mut in ["m1", "m2", "m3"]:
+            for typ in ["s", "f"]:
+                ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist_g{GENERATION}_{mut}_{typ}Mut.out")
+                ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_g{GENERATION}_{mut}_{typ}Mut.out")
+        ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist_g{GENERATION}_m3_aveTimeFix.out")
+        ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_g{GENERATION}_m3_aveTimeFix.out")
+        ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/pi_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist.txt")
+        ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist/sumStats_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_epist_haps.txt")
+        ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/pi_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}.txt")
+        ALL_TARGETS.append(f"05-results/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}/sumStats_fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}_haps.txt")
+
+
+# Parameter values driving section B's plotting loops.
+#   Full mode      : use the CURRENT_COMBOS parameters defined at the top (original behavior).
+#   Plot-only mode : derive from EXISTING_COMBOS so that ALL combinations present
+#                    in 05-results/ are considered, even outside the current params.
+if PLOT_ONLY:
+    _LOOP_H   = sorted(set(c[0] for c in EXISTING_COMBOS)) if EXISTING_COMBOS else DOMINANCES
+    _LOOP_REC = sorted(set(c[1] for c in EXISTING_COMBOS)) if EXISTING_COMBOS else PD_L
+    _LOOP_CRE = sorted(set(c[2] for c in EXISTING_COMBOS)) if EXISTING_COMBOS else CRE_L
+    _LOOP_SM3 = sorted(set(c[3] for c in EXISTING_COMBOS)) if EXISTING_COMBOS else SELECTIONS_M3
+    _LOOP_S   = sorted(set(c[4] for c in EXISTING_COMBOS)) if EXISTING_COMBOS else SELECTIONS
+else:
+    _LOOP_H   = DOMINANCES
+    _LOOP_REC = PD_L
+    _LOOP_CRE = CRE_L
+    _LOOP_SM3 = SELECTIONS_M3
+    _LOOP_S   = SELECTIONS
 
 # B. Dynamic targets: Adding PDFs only if the required data is available
 # Lock for H plot
-for pl in PD_L:
-    for cl in CRE_L:
-        for sm3 in SELECTIONS_M3:
-            for s in SELECTIONS:
+for pl in _LOOP_REC:
+    for cl in _LOOP_CRE:
+        for sm3 in _LOOP_SM3:
+            for s in _LOOP_S:
                 if all((h_val, pl, cl, sm3, s) in ALL_AVAILABLE for h_val in TARGET_H):
                     ALL_TARGETS.append(f"05-results/pdfs_h_analysis/SinglePlot_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}.pdf")
 
 # Lock for Recombination plot
-for h in DOMINANCES:
-    for cl in CRE_L:
-        for sm3 in SELECTIONS_M3:
+for h in _LOOP_H:
+    for cl in _LOOP_CRE:
+        for sm3 in _LOOP_SM3:
             if all((h, pl_val, cl, sm3, s_val) in ALL_AVAILABLE for pl_val in TARGET_REC for s_val in TARGET_S):
-                ALL_TARGETS.append(f"05-results/pdfs_rec_analysis/fyonetal-h{h}_cre{cl}kb_sM3{sm3}_PD_{PD_STR_USCORE}_acrossRecomb.done")
+                ALL_TARGETS.append(f"05-results/pdfs_rec_analysis/SinglePlot_h{h}_cre{cl}kb_sM3{sm3}_PD_{PD_STR_USCORE}.pdf")
 
 # Lock for SM3 plot
-for h in DOMINANCES:
-    for pl in PD_L:
-        for cl in CRE_L:
-            for s in SELECTIONS:
+for h in _LOOP_H:
+    for pl in _LOOP_REC:
+        for cl in _LOOP_CRE:
+            for s in _LOOP_S:
                 if all((h, pl, cl, sm3_val, s) in ALL_AVAILABLE for sm3_val in TARGET_SM3):
                     ALL_TARGETS.append(f"05-results/pdfs_sm3_analysis/SinglePlot_h{h}_rec{pl}kb_cre{cl}kb_s{s}.pdf")
 
 # Lock for SM2 global plots
-for h in DOMINANCES:
-    for pl in PD_L:
-        for cl in CRE_L:
-            for sm3 in SELECTIONS_M3:
+for h in _LOOP_H:
+    for pl in _LOOP_REC:
+        for cl in _LOOP_CRE:
+            for sm3 in _LOOP_SM3:
                 if all((h, pl, cl, sm3, s_val) in ALL_AVAILABLE for s_val in TARGET_S):
                     ALL_TARGETS.append(f"05-results/pdfs_sm2_analysis/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_SFSstats_violins.pdf")
                     ALL_TARGETS.append(f"05-results/pdfs_sm2_analysis/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_HapsPlots_violins.pdf")
@@ -432,12 +501,34 @@ rule merge_m3_ave_time_fix:
 # Uses an R script to calculate genetic statistics (pi, per site stats, and haplotypes) 
 # from the raw SLiM outputs. 
 # Implements a dynamic batching system with 'xargs' to process replicates in parallel 
+# 
+# Input function:
+# Plot-only mode : No declared inputs, which means the rule does not run
+# Full mode      : check whether this model's sumStats/pi outputs ALREADY exist in 05-results/.
+#
+# If they exist: No declared inputs. This combo is treated as already-computed
+#
+# If they're missing: require slim_done + R scripts, so new combos still get simulated.
+
+def _sum_stats_inputs(wildcards):
+    if PLOT_ONLY:
+        return {}
+
+    pi = f"05-results/{wildcards.model_name}/pi_{wildcards.model_name}.txt"
+    per_site = f"05-results/{wildcards.model_name}/sumStats_{wildcards.model_name}_perSite.txt"
+    haps = f"05-results/{wildcards.model_name}/sumStats_{wildcards.model_name}_haps.txt"
+    if os.path.exists(pi) and os.path.exists(per_site) and os.path.exists(haps):
+        return {}
+
+    return {
+        "slim_done": f"SLIM/{wildcards.model_name}/.slim_simulations.done",
+        "script": "02-scripts/computingSumStats_SLIM.R",
+        "funcs": "02-scripts/sumStats_functions.R",
+    }
+
 rule compute_sum_stats:
     input:
-        # Ensures all SLiM simulations are fully completed before starting the R analysis
-        slim_done = "SLIM/{model_name}/.slim_simulations.done",
-        script = "02-scripts/computingSumStats_SLIM.R",
-        funcs = "02-scripts/sumStats_functions.R"
+        unpack(_sum_stats_inputs)
     output:
         # Final aggregated statistics files
         pi = "05-results/{model_name}/pi_{model_name}.txt",
@@ -533,11 +624,11 @@ EOF
 # Creates PDF box plots comparing different selection coefficients (sM2) for different statistics.
 rule plot_sum_stats:
     input:
-        script_sfs = "02-scripts/plotting_SFS_Stats.R",
-        script_hap = "02-scripts/plottingHapStats.R",
-        script_fixed = "02-scripts/plotting_Fix_Stats.R",
-        haps_epist = expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist_haps.txt", s=TARGET_S),
-        haps_null = expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_haps.txt", s=TARGET_S)
+        script_sfs = _anc("02-scripts/plotting_SFS_Stats.R"),
+        script_hap = _anc("02-scripts/plottingHapStats.R"),
+        script_fixed = _anc("02-scripts/plotting_Fix_Stats.R"),
+        haps_epist = _anc(expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist_haps.txt", s=TARGET_S)),
+        haps_null  = _anc(expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_haps.txt", s=TARGET_S))
     output:
         pdf_sfs = "05-results/pdfs_sm2_analysis/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_SFSstats_violins.pdf",
         pdf_hap = "05-results/pdfs_sm2_analysis/fyonetal-h{h}_rec{pl}kb_cre{cl}kb_sM3{sm3}_HapsPlots_violins.pdf",
@@ -564,11 +655,11 @@ rule plot_sum_stats:
 # Uses a dummy '.done' file because the R script generates multiple PDFs in the output directory.
 rule plot_fixed_mut_across_recomb:
     input:
-        haps_epist = expand("05-results/fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist/sumStats_fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist_haps.txt", s=TARGET_S, pl=TARGET_REC),
-        haps_null = expand("05-results/fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}/sumStats_fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_haps.txt", s=TARGET_S, pl=TARGET_REC),        
-        script = "02-scripts/fixedMutAcrossRECOMB.R"
+        haps_epist = _anc(expand("05-results/fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist/sumStats_fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_epist_haps.txt", s=TARGET_S, pl=TARGET_REC)),
+        haps_null  = _anc(expand("05-results/fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}/sumStats_fyonetal-h{{h}}_rec{pl}kb_cre{{cl}}kb_sM3{{sm3}}_s{s}_haps.txt", s=TARGET_S, pl=TARGET_REC)),
+        script = _anc("02-scripts/fixedMutAcrossRECOMB.R")
     output:
-        dummy = "05-results/pdfs_rec_analysis/fyonetal-h{h}_cre{cl}kb_sM3{sm3}_PD_" + PD_STR_USCORE + "_acrossRecomb.done"
+        pdf = "05-results/pdfs_rec_analysis/SinglePlot_h{h}_cre{cl}kb_sM3{sm3}_PD_" + PD_STR_USCORE + ".pdf"
     params:
         suffix = "fyonetal-h{h}_rec",
         cre_size = "{cl}",
@@ -582,7 +673,6 @@ rule plot_fixed_mut_across_recomb:
     shell:
         """
         Rscript --vanilla {input.script} $PWD/05-results {params.suffix} {params.cre_size} {params.pd_comma} {params.pd_uscore} {params.sm3}
-        touch {output.dummy}
         """
 
 
@@ -590,9 +680,9 @@ rule plot_fixed_mut_across_recomb:
 # Generates comparison plots for a specific model across different dominance coefficients (h values).
 rule plot_h_stats:
     input:
-        script = "02-scripts/plotting_h_Stats.R",
-        haps_epist = expand("05-results/fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}_epist/sumStats_fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}_epist_haps.txt", h=TARGET_H),
-        haps_null = expand("05-results/fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}/sumStats_fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}_haps.txt", h=TARGET_H)    
+        script = _anc("02-scripts/plotting_h_Stats.R"),
+        haps_epist = _anc(expand("05-results/fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}_epist/sumStats_fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}_epist_haps.txt", h=TARGET_H)),
+        haps_null  = _anc(expand("05-results/fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}/sumStats_fyonetal-h{h}_rec{{pl}}kb_cre{{cl}}kb_sM3{{sm3}}_s{{s}}_haps.txt", h=TARGET_H))
     output:
         pdf = "05-results/pdfs_h_analysis/SinglePlot_rec{pl}kb_cre{cl}kb_sM3{sm3}_s{s}.pdf"
     params:
@@ -610,9 +700,9 @@ rule plot_h_stats:
 # Generates comparison plots for a specific model across different regulatory selection coefficients (sM3 values).
 rule plot_sm3_stats:
     input:
-        script = "02-scripts/plotting_sm3_Stats.R",
-        haps_epist = expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}_epist/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}_epist_haps.txt", sm3=TARGET_SM3),
-        haps_null = expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}_haps.txt", sm3=TARGET_SM3)
+        script = _anc("02-scripts/plotting_sm3_Stats.R"),
+        haps_epist = _anc(expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}_epist/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}_epist_haps.txt", sm3=TARGET_SM3)),
+        haps_null  = _anc(expand("05-results/fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}/sumStats_fyonetal-h{{h}}_rec{{pl}}kb_cre{{cl}}kb_sM3{sm3}_s{{s}}_haps.txt", sm3=TARGET_SM3))
     output:
         pdf = "05-results/pdfs_sm3_analysis/SinglePlot_h{h}_rec{pl}kb_cre{cl}kb_s{s}.pdf"
     params:
@@ -1830,15 +1920,16 @@ plottingAveSumStatsAcrossRecCategoriesGroupSelection <- function(sumStatLabel,ti
       geom_point() +
       facet_wrap(~ASEModel) + 
       labs(title=titlePlot,
-           subtitle = creTitle,
+           subtitle = modelSubtitle,
            color = "Selection coeff.") +
       ylab(statsYlabel) +
       xlab("Recombination rate - log10") +
       theme_bw() + 
       scale_color_manual(values = colorsClasses[seq(1,10,by=2)]) +
       #scale_x_discrete(labels=log10(unique(m$distanceLabels))) + 
-      xlab(xLabel)
-    ggsave(file=paste0("pdfs_rec_analysis/", pdf_prefix, "_", sumStatLabel,"_acrossGenetDist", pdTag, ".pdf"), width = 20, height = 10, units = "cm")
+      xlab(xLabel) +
+      theme(aspect.ratio = 0.9)
+    print(last_plot())
     
   }} else {{
     ggplot(mean_sumStat, aes(x=log10(GenetDist), y=meanSS, group = selectionCoeff, colour = selectionCoeff)) + 
@@ -1846,15 +1937,16 @@ plottingAveSumStatsAcrossRecCategoriesGroupSelection <- function(sumStatLabel,ti
       geom_point() +
       facet_wrap(~ASEModel) + 
       labs(title=titlePlot,
-           subtitle = creTitle,
+           subtitle = modelSubtitle,
            color = "Selection coeff.") +
       ylab(statsYlabel) +
       xlab("Recombination rate - log10") +
       theme_bw() + 
       scale_color_manual(values = colorsClasses[seq(1,10,by=2)]) + #
       #scale_x_discrete(labels=log10(unique(m$distanceLabels))) + 
-      xlab(xLabel)
-    ggsave(file=paste0("pdfs_rec_analysis/", pdf_prefix, "_", sumStatLabel,"_acrossGenetDist", pdTag, ".pdf"), width = 20, height = 10, units = "cm")  
+      xlab(xLabel) +
+      theme(aspect.ratio = 0.9)
+    print(last_plot())
   }}
 }}
 
@@ -1900,7 +1992,7 @@ plottingAveSumStatsAcrossRecCategoriesGroupASE <- function(sumStatLabel,titlePlo
       geom_point() +
       facet_wrap(~selectionCoeff, scales = "free") + 
       labs(title=titlePlot,
-           subtitle = creTitle,
+           subtitle = modelSubtitle,
            color = "Selection coeff.") +
       ylab(statsYlabel) +
       xlab("Recombination rate - log10") +
@@ -1908,7 +2000,7 @@ plottingAveSumStatsAcrossRecCategoriesGroupASE <- function(sumStatLabel,titlePlo
       scale_color_manual(values = colorsClasses) + #[seq(1,10,by=2)]
       #scale_x_discrete(labels=log10(unique(m$distanceLabels))) + 
       xlab(xLabel)
-    ggsave(file=paste0("pdfs_rec_analysis/", pdf_prefix, "_", sumStatLabel,"_acrossGenetDistGroupASE", pdTag, ".pdf"), width = 20, height = 10, units = "cm")
+    print(last_plot())
 
   }} else {{
     ggplot(mean_sumStat, aes(x=log10(GenetDist), y=meanSS, group = ASEModel, colour = ASEModel)) + 
@@ -1916,7 +2008,7 @@ plottingAveSumStatsAcrossRecCategoriesGroupASE <- function(sumStatLabel,titlePlo
       geom_point() +
       facet_wrap(~selectionCoeff, scales = "free") + 
       labs(title=titlePlot,
-           subtitle = creTitle,
+           subtitle = modelSubtitle,
            color = "Selection coeff.") +
       ylab(statsYlabel) +
       xlab("Recombination rate - log10") +
@@ -1924,7 +2016,7 @@ plottingAveSumStatsAcrossRecCategoriesGroupASE <- function(sumStatLabel,titlePlo
       scale_color_manual(values = colorsClasses) + #[seq(1,10,by=2)]
       #scale_x_discrete(labels=log10(unique(m$distanceLabels))) + 
       xlab(xLabel)
-      ggsave(file=paste0("pdfs_rec_analysis/", pdf_prefix, "_", sumStatLabel,"_acrossGenetDistGroupASE", pdTag, ".pdf"), width = 20, height = 10, units = "cm")
+      print(last_plot())
   }}
 }}
 
@@ -2071,7 +2163,7 @@ plottingFixedMutations <- function(nameModel, pName, yAxisLabel) {{
   
   
   p <- ggplot(tmpDF, aes(x=selectionCoeff, y=V1)) + 
-    labs(title = plotTitle, subtitle = nameModel,x = "Selection model", y = yLabel) + 
+    labs(title = plotTitle, subtitle = paste0(nameModel),x = "Selection model", y = yLabel) + 
     geom_boxplot(aes(color=Model)) + 
     scale_x_discrete(labels=selCoeffLabels) + 
     scale_color_manual(values=colorsClasses) + 
@@ -2099,7 +2191,7 @@ plottingTimeToFix <- function(nameModel, pName, yAxisLabel) {{
   
   
   p <- ggplot(tmpDF, aes(x=selectionCoeff, y=V1)) + 
-    labs(title = plotTitle, subtitle = nameModel,x = "Selection model", y = yLabel) + 
+    labs(title = plotTitle, subtitle = paste0(nameModel),x = "Selection model", y = yLabel) + 
     geom_boxplot(aes(color=Model)) + 
     scale_x_discrete(labels=selCoeffLabels) + 
     scale_color_manual(values=colorsClasses) + 
@@ -2125,7 +2217,7 @@ plotNbFixedMutFunctionRecombination <- function(coefSelection,xName) {{
     geom_boxplot() + 
     facet_wrap(~ASEModel) + 
     labs(title=paste0("Regulatory mutations: ", creTitle),
-         subtitle = paste0("s=", coefSelection)) +
+         subtitle = paste0("sM2=", coefSelection, " | ", modelSubtitle)) +
     ylab("Number of fixed mutations") +
     theme_bw() + 
     scale_x_discrete(labels=unique(ll$GenetDist)) + 
@@ -2191,8 +2283,12 @@ pd_uscore <- args[5]     # ex: "0.5_1_5"
 sM3_val <- args[6]       # ex: "-0.001"
 
 # create an uniq name for each model to name the pdfs
-h_val <- sub(".*-h(.*)_rec", "\\1", suffixModel)
+h_val <- gsub("_rec", "", gsub("fyonetal-h", "", suffixModel))
 pdf_prefix <- paste0("fyonetal-h", h_val, "_cre", creSizeRaw, "kb_sM3", sM3_val)
+modelSubtitle <- paste0("h: ", h_val, " | CRE: ", creSizeRaw, "kb | sM3: ", sM3_val)
+
+pdf_name <- paste0(outputPDF, "/SinglePlot_h", h_val, "_cre", creSizeRaw, "kb_sM3", sM3_val, "_PD_", pd_uscore, ".pdf")
+pdf(file = pdf_name, width = 10, height = 8)
 
 
 pdTag <- paste0("_PD_", pd_uscore)
@@ -2250,22 +2346,21 @@ fixPlots <- lapply(names(listFixedMut), function(x) {{
   plottingFixedMutations(scenarioRecCRE,plotTitle, yLabel)
   }})
 
-ggarrange(plotlist = fixPlots, ncol = 3, nrow = 2, 
-          labels = LETTERS[1:length(fixPlots)]) %>% ggexport(filename = boxplotPerCRE, height = 8, width = 12)
+print(ggarrange(plotlist = fixPlots, ncol = 3, nrow = 2, labels = LETTERS[1:length(fixPlots)]))
 #===================================         
 ## plot nb. of fixed reg mutations as a function of recombination 
-plotNbFixedMutFunctionRecombination(selCoeffTag, xLabel)
-ggsave(file=boxplotAcrossRec, width = 20, height = 10, units = "cm")
+print(plotNbFixedMutFunctionRecombination(selCoeffTag, xLabel))
 #===================================
 #===================================         
 ## plot average time to fixation of reg mutations as a function of recombination 
 listTimeToFix <- collectingTimeToFixationAcrossRuns(scenarios, T)
 yLabel <- "Time to fixation"
-fixPlots <- lapply(names(listTimeToFix), function(x) {{
+fixPlots_ttf <- lapply(names(listTimeToFix), function(x) {{
   scenarioRecCRE <- x;
 
   plottingTimeToFix(scenarioRecCRE,"Regulatory: fixed mutations", yLabel)
 }})
+print(ggarrange(plotlist = fixPlots_ttf, ncol = 3, nrow = 2, labels = LETTERS[1:length(fixPlots_ttf)]))
 # computing mean time to fix
 meanTtoFixation <- lapply(names(listTimeToFix), function(x) {{
   scenarioRecCRE <- x; 
@@ -2280,20 +2375,21 @@ m <- m %>% mutate(distanceLabels=scientific(GenetDist, digits = 2))
 m$distanceLabels <- factor(m$distanceLabels, levels=unique(m$distanceLabels))
 
 #colorsClasses <- wes_palette("Zissou1", length(majorScenarios)*2, type = "continuous")
-ggplot(m, aes(x=log10(GenetDist), y=meanTime, group = selectionCoeff, colour = selectionCoeff)) + 
+p_m <- ggplot(m, aes(x=log10(GenetDist), y=meanTime, group = selectionCoeff, colour = selectionCoeff)) + 
   geom_line() + 
   geom_point() +
   facet_wrap(~ASEModel) + 
   labs(title="Regulatory mutations: time to fixation",
-       subtitle = creTitle,
+       subtitle = modelSubtitle,
        color = "Selection coeff.") +
   ylab("Average time to fixation (g)") +
   xlab("Recombination rate - log10") +
   theme_bw() + 
-  scale_color_manual(values = colorsClasses[seq(1,10,by=2)])
+  scale_color_manual(values = colorsClasses[seq(1,10,by=2)])+
   #scale_x_discrete(labels=log10(unique(m$distanceLabels))) + 
-  xlab(xLabel)
-ggsave(file=paste0("pdfs_rec_analysis/", pdf_prefix, "_timeToFixation_acrossGenetDist", pdTag, ".pdf"), width = 20, height = 10, units = "cm")
+  xlab(xLabel) +
+  theme(aspect.ratio = 0.9) # Change the ratio size of the graph
+print(p_m)
 #===================================
 #===================================         
 ## plot average number of mutations that went to fixation
@@ -2305,26 +2401,28 @@ meanM3Number <- lapply(names(listFixedMut), function(x) {{
 }})
 names(meanM3Number) <- names(listFixedMut)
 
+
 m <- do.call(rbind, meanM3Number) 
 
 m <- m %>% mutate(distanceLabels=scientific(GenetDist, digits = 2))
 m$distanceLabels <- factor(m$distanceLabels, levels=unique(m$distanceLabels))
 
 #colorsClasses <- wes_palette("Zissou1", length(majorScenarios)*2, type = "continuous")
-ggplot(m, aes(x=log10(GenetDist), y=meanTime, group = selectionCoeff, colour = selectionCoeff)) + 
+p_m <- ggplot(m, aes(x=log10(GenetDist), y=meanTime, group = selectionCoeff, colour = selectionCoeff)) + 
   geom_line() + 
   geom_point() +
   facet_wrap(~ASEModel) + 
   labs(title="Regulatory mutations: nb of fixed",
-       subtitle = creTitle,
+       subtitle = modelSubtitle,
        color = "Selection coeff.") +
   ylab("Average number of fixed mutations") +
   xlab("Recombination rate - log10") +
   theme_bw() + 
   scale_color_manual(values = colorsClasses[seq(1,10,by=2)]) +
 #scale_x_discrete(labels=log10(unique(m$distanceLabels))) + 
-xlab(xLabel)
-ggsave(file=paste0("pdfs_rec_analysis/", pdf_prefix, "_number_acrossGenetDist", pdTag, ".pdf"), width = 20, height = 10, units = "cm")
+xlab(xLabel) + 
+theme(aspect.ratio = 0.9) # Change the ratio size of the graph
+print(p_m)
 
 ##-----------------
 ##
@@ -2371,6 +2469,9 @@ isYLog <- F
 
 plottingAveSumStatsAcrossRecCategoriesGroupSelection(sumStatTag, titlePlotString,statsYString,perHap, pi, isYLog)
 
+
+dev.off()
+print(paste("PDF generated:", pdf_name))
 
 
 EOF
@@ -2482,6 +2583,7 @@ plot_stat_vs_h <- function(data, title, y_label, subtitle) {{
   
   # Ensure 'h' values are treated as ordered factors
   data$h <- factor(data$h, levels = sort(as.numeric(unique(data$h))))
+  data$ase <- factor(data$ase, levels = c("noASE", "ASE"))
   
 
   # Create the base boxplot comparing ASE and noASE models
@@ -2495,7 +2597,7 @@ plot_stat_vs_h <- function(data, title, y_label, subtitle) {{
       y = y_label,
       fill = "Model"
     ) +
-    scale_fill_manual(values = c("noASE" = "#E1AF00", "ASE" = "#3B9AB2")) + 
+    scale_fill_manual(values = c("noASE" = "purple", "ASE" = "green")) + 
     theme(legend.position = "bottom")
   
   # Initialize a list to store p-values for each 'h' level
@@ -2848,6 +2950,7 @@ plot_stat_vs_sm3 <- function(data, title, y_label, subtitle) {{
   valeurs_uniques <- unique(data$sm3)
   niveaux_tries <- valeurs_uniques[order(as.numeric(valeurs_uniques), decreasing = TRUE)]
   data$sm3 <- factor(data$sm3, levels = niveaux_tries)
+  data$ase <- factor(data$ase, levels = c("noASE", "ASE"))
 
   # Create the base boxplot comparing ASE and noASE models
   p <- ggplot(data, aes(x = sm3, y = value, fill = ase)) +

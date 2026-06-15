@@ -48,10 +48,24 @@ The Snakemake workflow handles the following steps automatically:
 ## How to Run the Pipeline
 Always clear out the old R scripts before running. Because Snakemake dynamically generates the R scripts, deleting them forces the pipeline to write the most up-to-date versions based on your current Snakefile.
 
+The pipeline has two modes, selected via `--config plot_only=...`:
+
+* **Full mode (default)**: runs SLiM simulations for the parameters defined at the top of the Snakefile (if needed), computes summary statistics, and produces plots from both the new simulations and any previously computed data.
 ```bash
 Launch the pipeline on the cluster ( adjust jobs parameters accordingly to cluster capacity, 5 jobs means that at maximum you take 100 cores and 160 GB ram)
 nohup snakemake --executor slurm --jobs 5 &
 ```
+
+* **Plot-only mode**: never launches simulations or stat computations. It only regenerates PDFs from data that already exists in `05-results/`.
+```bash
+nohup snakemake --config plot_only=True --executor slurm --jobs 5 &
+```
+
+Since plot-only mode doesn't need any cluster resources, it can also be run locally on any machine as long as the conda environment is installed and activated, and `05-results/is present:
+```bash
+snakemake --config plot_only=True --cores 1
+```
+
 
 ## Outputs & Results
 Once finished, all your results will be neatly organized inside the 05-results/ directory:
@@ -81,4 +95,15 @@ SELECTIONS_M3 = ["-0.0001"]
 * **CRE_L**: Cis-Regulatory Element length in kb.
 * **PD_L**: Physical distance between genomic elements in kb.
 
-**Smart Plotting Auto-Detection**: You do not need to rerun old simulations to plot them together with new ones. It dynamically updates the plotting targets to include both your current simulations and previously computed models.
+A second block, the Plot Locking System, defines the full ranges a plot needs before it is unlocked (before Snakemake will request it):
+
+```python
+TARGET_H = ["0.1", "0.25", "0.5", "0.7"]
+TARGET_REC = ["0.5", "1", "5", "10", "500"]
+TARGET_SM3 = ["-0", "-0.0001", "-0.001"]
+TARGET_S = ["-0.001", "-0.01", "-0.0425", "-0.1", "-0.3"]
+```
+
+* **TARGET_H / TARGET_REC / TARGET_SM3 / TARGET_S**: the full set of h / recombination distance / sM3 / sM2 values that a given comparison plot spans across. A plot is only added to the run's targets once all the required combinations exist (from current simulations, past simulations, or both).
+
+**Smart Plotting Auto-Detection**: You do not need to rerun old simulations to plot them together with new ones. At startup, the Snakefile scans `05-results/` to find which parameter combinations already exist. Combinations from `DOMINANCES`/`SELECTIONS`/`SELECTIONS_M3`/`PD_L`/`CRE_L` that are already present are skipped entirely (no simulation, stats, or model files are regenerated for them), only new combinations are simulated. The plot-locking system then considers both the new and the pre-existing combinations together, so comparison plots can mix old and new data.
