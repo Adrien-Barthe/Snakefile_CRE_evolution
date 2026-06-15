@@ -46,7 +46,6 @@ The Snakemake workflow handles the following steps automatically:
 * **plot_ rules**: Launches the R scripts to perform Wilcoxon tests, extract p-values, and draw ggpubr boxplots.
 
 ## How to Run the Pipeline
-Always clear out the old R scripts before running. Because Snakemake dynamically generates the R scripts, deleting them forces the pipeline to write the most up-to-date versions based on your current Snakefile.
 
 The pipeline has two modes, selected via `--config plot_only=...`:
 
